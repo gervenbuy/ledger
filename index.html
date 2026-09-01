@@ -199,6 +199,13 @@
 <div class="modal-overlay" id="recordModal">
   <div class="modal">
     <h3 id="modalTitle">新增收入</h3>
+    <label>收支類型</label>
+    <div class="cat-grid" id="typeGrid" style="grid-template-columns:repeat(2, 1fr);">
+      <div class="cat-btn" id="typeBtnIncome" onclick="switchPendingType('收入')">收入</div>
+      <div class="cat-btn" id="typeBtnExpense" onclick="switchPendingType('支出')">支出</div>
+    </div>
+    <label>日期</label>
+    <input type="date" id="dateInput">
     <label>分類</label>
     <div class="cat-grid" id="catGrid"></div>
     <label>金額</label>
@@ -217,6 +224,9 @@
     <div class="modal-actions">
       <button class="btn-cancel" onclick="closeModal()">取消</button>
       <button class="btn-save" onclick="submitRecord()">儲存</button>
+    </div>
+    <div class="modal-actions" id="editDeleteRow" style="display:none;">
+      <button style="background:var(--red); color:var(--red-ink); width:100%;" onclick="deleteFromEdit()">刪除這筆記錄</button>
     </div>
   </div>
 </div>
@@ -244,8 +254,10 @@ let state = {
   currentMonth: monthString(new Date()),
   categories: {},
   records: [],
+  pendingLedger: '',
   pendingType: '收入',
   pendingCategory: '',
+  editingRowIndex: null,       // null = 新增模式；有值 = 編輯模式
   deleteTarget: null
 };
 
@@ -387,7 +399,7 @@ async function loadLedger(ledgerName){
     html += '<div class="record-list">';
     state.records.forEach(r=>{
       const isIn = r.type === '收入';
-      html += '<div class="record" onclick="openDeleteModal(\''+ledgerName+'\','+r.rowIndex+',\''+r.category+'\','+r.amount+')">';
+      html += '<div class="record" onclick="openEditModalByRow('+r.rowIndex+')">';
       html += '<div><div class="name">'+r.category+(r.item?(' · '+r.item):'')+'</div><div class="meta">'+r.date+' · '+(r.paymentMethod||'')+'</div></div>';
       html += '<div class="amt mono '+(isIn?'in':'out')+'">'+(isIn?'+':'−')+fmtMoney(r.amount)+'</div>';
       html += '</div>';
@@ -399,49 +411,95 @@ async function loadLedger(ledgerName){
   state.currentLedger = ledgerName;
 }
 
-// ===== 記帳 Modal =====
+// ===== 記帳 Modal（新增 / 編輯共用） =====
+function todayStr(){
+  const d = new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+
 async function openRecordModal(ledgerName, type){
   state.pendingLedger = ledgerName;
-  state.pendingType = type;
-  document.getElementById('modalTitle').textContent = (type === '收入' ? '新增收入' : '新增支出') + '（' + ledgerName + '）';
+  state.editingRowIndex = null;
+  document.getElementById('editDeleteRow').style.display = 'none';
+  document.getElementById('modalTitle').textContent = '新增記錄（' + ledgerName + '）';
+  document.getElementById('dateInput').value = todayStr();
   document.getElementById('amountInput').value = '';
   document.getElementById('itemInput').value = '';
   document.getElementById('noteInput').value = '';
+  document.getElementById('paymentInput').value = '現金';
+  await switchPendingType(type);
+  document.getElementById('recordModal').classList.add('show');
+}
 
-  const catRes = await callApi('getCategories', { ledger: ledgerName });
+function openEditModalByRow(rowIndex){
+  const r = state.records.find(x => x.rowIndex === rowIndex);
+  if(!r) return;
+  openEditModal(state.currentLedger, r);
+}
+
+async function openEditModal(ledgerName, r){
+  state.pendingLedger = ledgerName;
+  state.editingRowIndex = r.rowIndex;
+  document.getElementById('editDeleteRow').style.display = 'block';
+  document.getElementById('modalTitle').textContent = '編輯記錄（' + ledgerName + '）';
+  document.getElementById('dateInput').value = r.date;
+  document.getElementById('amountInput').value = r.amount;
+  document.getElementById('itemInput').value = r.item || '';
+  document.getElementById('noteInput').value = r.note || '';
+  document.getElementById('paymentInput').value = r.paymentMethod || '現金';
+  await switchPendingType(r.type, r.category);
+  document.getElementById('recordModal').classList.add('show');
+}
+
+async function switchPendingType(type, preselectCategory){
+  state.pendingType = type;
+  document.getElementById('typeBtnIncome').classList.toggle('selected', type === '收入');
+  document.getElementById('typeBtnExpense').classList.toggle('selected', type === '支出');
+
+  const catRes = await callApi('getCategories', { ledger: state.pendingLedger });
   const cats = catRes.success ? catRes.categories[type] : [];
+  state.pendingCategory = preselectCategory && cats.indexOf(preselectCategory) !== -1 ? preselectCategory : (cats[0] || '');
+
   const grid = document.getElementById('catGrid');
   grid.innerHTML = '';
-  state.pendingCategory = cats[0] || '';
   cats.forEach(c=>{
     const btn = document.createElement('div');
     btn.className = 'cat-btn' + (c === state.pendingCategory ? ' selected' : '');
     btn.textContent = c;
     btn.onclick = ()=>{
       state.pendingCategory = c;
-      document.querySelectorAll('.cat-btn').forEach(b=>b.classList.remove('selected'));
+      document.querySelectorAll('#catGrid .cat-btn').forEach(b=>b.classList.remove('selected'));
       btn.classList.add('selected');
     };
     grid.appendChild(btn);
   });
-
-  document.getElementById('recordModal').classList.add('show');
 }
+
 function closeModal(){
   document.getElementById('recordModal').classList.remove('show');
 }
+
 async function submitRecord(){
   const amount = parseFloat(document.getElementById('amountInput').value);
   if(!amount || amount <= 0){ showToast('請輸入正確金額'); return; }
-  const res = await callApi('addRecord', {
+  const date = document.getElementById('dateInput').value || todayStr();
+  const payload = {
     ledger: state.pendingLedger,
+    date: date,
     type: state.pendingType,
     category: state.pendingCategory,
     amount: amount,
     item: document.getElementById('itemInput').value,
     paymentMethod: document.getElementById('paymentInput').value,
     note: document.getElementById('noteInput').value
-  });
+  };
+  let res;
+  if(state.editingRowIndex){
+    payload.rowIndex = state.editingRowIndex;
+    res = await callApi('updateRecord', payload);
+  } else {
+    res = await callApi('addRecord', payload);
+  }
   if(res.success){
     closeModal();
     showToast('已儲存');
@@ -451,9 +509,16 @@ async function submitRecord(){
   }
 }
 
-function openDeleteModal(ledgerName, rowIndex, category, amount){
+function deleteFromEdit(){
+  const ledger = state.pendingLedger;
+  const rowIndex = state.editingRowIndex;
+  closeModal();
+  openDeleteModal(ledger, rowIndex);
+}
+
+function openDeleteModal(ledgerName, rowIndex){
   state.deleteTarget = { ledger: ledgerName, rowIndex: rowIndex };
-  document.getElementById('deleteTargetInfo').textContent = category + '　$' + fmtMoney(amount);
+  document.getElementById('deleteTargetInfo').textContent = '這筆記錄刪除後無法復原';
   document.getElementById('deleteModal').classList.add('show');
 }
 function closeDeleteModal(){
