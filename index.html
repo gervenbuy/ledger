@@ -267,8 +267,13 @@ function showToast(msg){
 }
 
 async function callApi(action, extraParams){
-  const params = new URLSearchParams(Object.assign({ action: action, password: state.password }, extraParams || {}));
-  const res = await fetch(API_URL + '?' + params.toString());
+  // _ts 用來防止 Google Apps Script Web App 對 GET 請求做邊緣快取，
+  // 每次呼叫網址都不同，確保讀到的是最新資料。
+  const params = new URLSearchParams(Object.assign(
+    { action: action, password: state.password, _ts: Date.now() },
+    extraParams || {}
+  ));
+  const res = await fetch(API_URL + '?' + params.toString(), { cache: 'no-store' });
   return res.json();
 }
 
